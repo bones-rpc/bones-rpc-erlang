@@ -1,0 +1,15 @@
+{application, bones_rpc, [
+    {description, "Bones RPC client/server suite."},
+    {vsn, "0.0.0"},
+    {modules, []},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        sasl,
+        crypto,
+        ranch
+    ]},
+    {mod, {bones_rpc_app, []}},
+    {env, []}
+]}.
