@@ -12,11 +12,14 @@
 -include("bones.hrl").
 
 %% bones_adapter callbacks
--export([pack/1, pack/2, unpack/1, unpack/2, unpack_stream/1, unpack_stream/2]).
+-export([name/0, pack/1, pack/2, unpack/1, unpack/2, unpack_stream/1, unpack_stream/2]).
 
 %%%===================================================================
 %%% bones_adapter callbacks
 %%%===================================================================
+
+name() ->
+    <<"erlang">>.
 
 pack(Term) ->
     pack(Term, []).

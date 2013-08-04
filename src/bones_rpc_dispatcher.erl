@@ -9,34 +9,7 @@
 
 -module(bones_rpc_dispatcher).
 
-% -callback dispatch_init({atom(), bones_rpc}, Handler::module(), HandlerOpts::any())
-%     -> {ok, State}
-%     | {ok, State, hibernate}
-%     | {ok, State, timeout()}
-%     | {ok, State, timeout(), hibernate}
-%     | {shutdown, Reason::term(), State}.
-% -callback dispatch_request(Request::bones_rpc:request(), State::any())
-%     -> {ok, State}
-%     | {ok, State, hibernate}
-%     | {ok, State, timeout()}
-%     | {ok, State, timeout(), hibernate}
-%     | {shutdown, Reason::term(), State}.
-% -callback dispatch_notify(Notify::bones_rpc:notify(), State::any())
-%     -> {ok, State}
-%     | {ok, State, hibernate}
-%     | {ok, State, timeout()}
-%     | {ok, State, timeout(), hibernate}
-%     | {shutdown, Reason::term(), State}.
-% -callback dispatch_info(Info::term(), State::any())
-%     -> {ok, State}
-%     | {ok, State, hibernate}
-%     | {ok, State, timeout()}
-%     | {ok, State, timeout(), hibernate}
-%     | {shutdown, Reason::term(), State}.
-% -callback dispatch_terminate(Reason::term(), Message :: undefined | bones_rpc:request() | bones_rpc:notify(), State::any())
-%     -> term().
-
-%% bones_rpc_dispatcher callbacks
+%% API
 -export([dispatch_init/3,
          dispatch_request/2,
          dispatch_notify/2,
@@ -53,26 +26,52 @@
 }).
 
 %%%===================================================================
-%%% bones_rpc_dispatcher callbacks
+%%% API functions
 %%%===================================================================
 
+-spec dispatch_init({atom(), bones_rpc}, Handler::module(), HandlerOpts::any())
+    -> {ok, State}
+    | {ok, State, hibernate}
+    | {ok, State, timeout()}
+    | {ok, State, timeout(), hibernate}
+    | {shutdown, Reason::term(), State}.
 dispatch_init(_Type, undefined, _HandlerOpts) ->
     erlang:error(no_handler_defined);
 dispatch_init(Type, Handler, HandlerOpts) ->
     handler_init(#state{type=Type, handler=Handler, handler_opts=HandlerOpts}).
 
+-spec dispatch_request(Request::bones_rpc:request(), State::any())
+    -> {ok, State}
+    | {ok, State, hibernate}
+    | {ok, State, timeout()}
+    | {ok, State, timeout(), hibernate}
+    | {shutdown, Reason::term(), State}.
 dispatch_request({request, MsgID, Method, Params}, State) ->
     Req = {MsgID, Method, Params},
     From = {self(), MsgID},
     handler_request(State, bones_rpc_request, From, Req).
 
+-spec dispatch_notify(Notify::bones_rpc:notify(), State::any())
+    -> {ok, State}
+    | {ok, State, hibernate}
+    | {ok, State, timeout()}
+    | {ok, State, timeout(), hibernate}
+    | {shutdown, Reason::term(), State}.
 dispatch_notify({notify, Method, Params}, State) ->
     Req = {Method, Params},
     handler_notify(State, bones_rpc_notify, Req).
 
+-spec dispatch_info(Info::term(), State::any())
+    -> {ok, State}
+    | {ok, State, hibernate}
+    | {ok, State, timeout()}
+    | {ok, State, timeout(), hibernate}
+    | {shutdown, Reason::term(), State}.
 dispatch_info(Info, State) ->
     handler_info(State, bones_rpc_info, Info).
 
+-spec dispatch_terminate(Reason::term(), Message :: undefined | bones_rpc:request() | bones_rpc:notify(), State::any())
+    -> term().
 dispatch_terminate(TerminateReason, Req, State) ->
     handler_terminate(State, Req, TerminateReason).
 
@@ -80,6 +79,7 @@ dispatch_terminate(TerminateReason, Req, State) ->
 %%% Internal functions
 %%%-------------------------------------------------------------------
 
+%% @private
 handler_init(State=#state{type=Type, handler=Handler, handler_opts=HandlerOpts}) ->
     case Handler:bones_rpc_init(Type, HandlerOpts) of
         {ok, HandlerState} ->
@@ -94,6 +94,7 @@ handler_init(State=#state{type=Type, handler=Handler, handler_opts=HandlerOpts})
             {shutdown, Reason, State#state{handler_state=HandlerState}}
     end.
 
+%% @private
 handler_request(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, From, Req) ->
     case Handler:Callback(Req, From, HandlerState) of
         {noreply, HandlerState2} ->
@@ -120,6 +121,7 @@ handler_request(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler
             {shutdown, Reason, State#state{handler_state=HandlerState2}}
     end.
 
+%% @private
 handler_notify(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, Req) ->
     case Handler:Callback(Req, HandlerState) of
         {noreply, HandlerState2} ->
@@ -134,6 +136,7 @@ handler_notify(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_
             {shutdown, Reason, State#state{handler_state=HandlerState2}}
     end.
 
+%% @private
 handler_info(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, Info) ->
     case Handler:Callback(Info, HandlerState) of
         {noreply, HandlerState2} ->
@@ -148,5 +151,6 @@ handler_info(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_st
             {shutdown, Reason, State#state{handler_state=HandlerState2}}
     end.
 
+%% @private
 handler_terminate(#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Req, Reason) ->
     Handler:bones_rpc_terminate(Reason, Req, HandlerState).

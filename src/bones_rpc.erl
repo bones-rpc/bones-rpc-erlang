@@ -12,6 +12,7 @@
 
 %% API
 -export([manual_start/0]).
+-export([connect/1, connect/3]).
 -export([start_listener/7, stop_listener/1, child_spec/7, reply/2]).
 
 %% Types
@@ -32,6 +33,22 @@
 -type acknowledge() :: {1, message_id(), boolean()}.
 -export_type([adapter/0, synchronize/0, acknowledge/0]).
 
+-type client() :: #bones_rpc_client_v1{}.
+-export_type([client/0]).
+
+% -type synchronize_message() :: {synchronize, ID::integer(), Adapter::binary()}.
+% -type acknowledge_message() :: {acknowledge, ID::integer(), Ready::boolean()}.
+% -type request_message()     :: {request, ID::integer(), Method::any(), Params::[any()]}.
+% -type response_message()    :: {response, ID::integer(), Error::any(), Result::any()}.
+% -type notify_message()      :: {notify, Method::any(), Params::[any()]}.
+
+% -type message() ::
+%     synchronize_message() |
+%     acknowledge_message() |
+%     request_message() |
+%     response_message() |
+%     notify_message().
+
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -41,6 +58,13 @@ manual_start() ->
     application:start(crypto),
     application:start(ranch),
     application:start(bones_rpc).
+
+connect(Client=#bones_rpc_client_v1{}) ->
+    bones_rpc_client:start_link(Client).
+
+connect(Host, Port, Options) ->
+    Client = bones_rpc_client_v1:new(Host, Port, Options),
+    connect(Client).
 
 -spec start_listener(ranch:ref(), non_neg_integer(), module(), any(), any(), module(), any())
     -> {ok, pid()} | {error, badarg}.
@@ -79,3 +103,7 @@ reply({To, MsgID}, {error, Error}) ->
     catch To ! {'$bones_rpc_reply', MsgID, Error, nil};
 reply({To, MsgID}, {result, Result}) ->
     catch To ! {'$bones_rpc_reply', MsgID, nil, Result}.
+
+%%%-------------------------------------------------------------------
+%%% Internal functions
+%%%-------------------------------------------------------------------

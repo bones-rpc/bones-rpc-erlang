@@ -45,6 +45,12 @@ bones_rpc_request({_, <<"fail">>, Params}, _From, State) ->
     {reply, {error, Params}, State};
 bones_rpc_request({_, <<"echo">>, Params}, _From, State) ->
     {reply, {result, Params}, State};
+bones_rpc_request({_, <<"sleep">>, [N]}, From, State) ->
+    spawn(fun() ->
+        timer:sleep(N),
+        bones_rpc:reply(From, {result, N})
+    end),
+    {noreply, State};
 bones_rpc_request({_, <<"sum">>, Nums}, From, State) ->
     spawn(fun() ->
         try

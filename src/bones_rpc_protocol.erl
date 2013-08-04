@@ -66,6 +66,7 @@ init([Ref, Socket, Transport, ProtoOpts]) ->
 %%% dispatcher functions
 %%%-------------------------------------------------------------------
 
+%% @private
 dispatcher_init(State=#state{transport=Transport}, Handler, HandlerOpts) ->
     try ?DISPATCHER:dispatch_init({Transport:name(), bones_rpc}, Handler, HandlerOpts) of
         {ok, DispatchState} ->
@@ -88,6 +89,7 @@ dispatcher_init(State=#state{transport=Transport}, Handler, HandlerOpts) ->
             terminate(Reason, State)
     end.
 
+%% @private
 dispatcher_request(State, DispatchState, Data, Callback, Request, NextState) ->
     try ?DISPATCHER:Callback(Request, DispatchState) of
         {ok, DispatchState2} ->
@@ -114,6 +116,7 @@ dispatcher_request(State, DispatchState, Data, Callback, Request, NextState) ->
             dispatcher_terminate(State, DispatchState, Request, Reason)
     end.
 
+%% @private
 dispatcher_notify(State, DispatchState, Data, Callback, Notify, NextState) ->
     try ?DISPATCHER:Callback(Notify, DispatchState) of
         {ok, DispatchState2} ->
@@ -140,6 +143,7 @@ dispatcher_notify(State, DispatchState, Data, Callback, Notify, NextState) ->
             dispatcher_terminate(State, DispatchState, Notify, Reason)
     end.
 
+%% @private
 dispatcher_info(State, DispatchState, Data, Callback, Info, NextState) ->
     try ?DISPATCHER:Callback(Info, DispatchState) of
         {ok, DispatchState2} ->
@@ -166,6 +170,7 @@ dispatcher_info(State, DispatchState, Data, Callback, Info, NextState) ->
             dispatcher_terminate(State, DispatchState, undefined, Reason)
     end.
 
+%% @private
 dispatcher_terminate(State, DispatchState, Message, TerminateReason) ->
     try
         ?DISPATCHER:dispatch_terminate(TerminateReason, Message, DispatchState)
@@ -246,17 +251,19 @@ parse_data(State=#state{adapter=Adapter}, DispatchState, Data) ->
     end.
 
 send(State=#state{transport=Transport, socket=Socket, adapter=Adapter}, DispatchState, Data, Object, NextState) ->
-    try bones_rpc_adapter:pack(Object, Adapter) of
-        Packet when is_binary(Packet) ->
-            case Transport:send(Socket, Packet) of
-                ok ->
-                    State2 = loop_timeout(State),
-                    NextState(State2, DispatchState, Data);
-                {error, SocketReason} ->
-                    dispatcher_terminate(State, DispatchState, undefined, {error, SocketReason})
-            end;
-        {error, AdapterReason} ->
-            erlang:error(AdapterReason)
+    try
+        case bones_rpc_adapter:pack(Object, Adapter) of
+            Packet when is_binary(Packet) ->
+                case Transport:send(Socket, Packet) of
+                    ok ->
+                        State2 = loop_timeout(State),
+                        NextState(State2, DispatchState, Data);
+                    {error, SocketReason} ->
+                        dispatcher_terminate(State, DispatchState, undefined, {error, SocketReason})
+                end;
+            {error, AdapterReason} ->
+                erlang:error(AdapterReason)
+        end
     catch
         Class:Reason ->
             error_logger:error_msg(

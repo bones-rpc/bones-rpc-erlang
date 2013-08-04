@@ -19,6 +19,7 @@
 -type unpack_return() :: {ok, Term::unpacked()} | {error, Reason::any()}.
 -type unpack_stream_return() :: {error, incomplete} | {error, Reason::any()} | {Term::unpacked(), Binary::packed()}.
 
+-callback name() -> Name::binary().
 -callback pack(Term::unpacked()) -> Result::pack_return().
 -callback pack(Term::unpacked(), Config::config()) -> Result::pack_return().
 -callback unpack(Binary::packed()) -> Result::unpack_return().
