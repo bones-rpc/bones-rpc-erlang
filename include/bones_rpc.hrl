@@ -7,6 +7,9 @@
 %%% Created :  18 Jul 2013 by Andrew Bennett <andrew@pagodabox.com>
 %%%-------------------------------------------------------------------
 
+-define(BONES_RPC_EXT_SYNCHRONIZE, 0).
+-define(BONES_RPC_EXT_ACKNOWLEDGE, 1).
+
 -define(BONES_RPC_REQUEST, 0).
 -define(BONES_RPC_RESPONSE, 1).
 -define(BONES_RPC_NOTIFY, 2).

@@ -380,9 +380,9 @@ parse_data(State=#state{socket=Socket, synack_id=SynackId, a_state=AState,
         session=Session, client=Client=#bones_rpc_client_v1{transport=Transport,
             session_module=SessionModule}}, synchronizing, Data) ->
     case bones_rpc_adapter:unpack_stream(Data, AState) of
-        {#bones_rpc_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C2 >>}, _RemainingData} ->
+        {#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C2 >>}, _RemainingData} ->
             {stop, {error, adapter_not_supported}, State};
-        {#bones_rpc_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C3 >>}, RemainingData} ->
+        {#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C3 >>}, RemainingData} ->
             case SessionModule:handle_up(Client, Session) of
                 {ok, Session2} ->
                     parse_data(State#state{session=Session2}, idle, RemainingData);

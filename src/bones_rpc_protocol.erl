@@ -202,7 +202,7 @@ loop_timeout(State=#state{timeout=Timeout, timeout_ref=PrevRef}) ->
 
 parse_data(State=#state{a_state=AState}, DispatchState, Data) ->
     case bones_rpc_adapter:unpack_stream(Data, AState) of
-        {#bones_rpc_ext_v1{head=0, data = << MsgID:4/big-unsigned-integer-unit:8, Adapter/binary >>}, RemainingData} ->
+        {#bones_rpc_ext_v1{head=?BONES_RPC_EXT_SYNCHRONIZE, data = << MsgID:4/big-unsigned-integer-unit:8, Adapter/binary >>}, RemainingData} ->
             Synchronize = {synchronize, MsgID, Adapter},
             dispatcher_message(State, DispatchState, RemainingData, Synchronize, fun parse_data/3);
         {[?BONES_RPC_REQUEST, MsgID, Method, Params], RemainingData} ->

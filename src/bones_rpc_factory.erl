@@ -20,11 +20,11 @@
 build({ext, Head, Data}) ->
     {ok, #bones_rpc_ext_v1{head=Head, data=Data}};
 build({synchronize, ID, Adapter}) when is_binary(Adapter) ->
-    Head = 0,
+    Head = ?BONES_RPC_EXT_SYNCHRONIZE,
     Data = << ID:4/big-unsigned-integer-unit:8, Adapter/binary >>,
     build({ext, Head, Data});
 build({acknowledge, ID, Ready}) when is_boolean(Ready) ->
-    Head = 1,
+    Head = ?BONES_RPC_EXT_ACKNOWLEDGE,
     Data = << ID:4/big-unsigned-integer-unit:8, case Ready of false -> 16#C2; true -> 16#C3 end >>,
     build({ext, Head, Data});
 build({request, ID, Method, Params}) ->

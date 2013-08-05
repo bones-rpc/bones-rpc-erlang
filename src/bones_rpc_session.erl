@@ -80,10 +80,10 @@ handle_send({notify, Method, Params}, _From, _Client, State) ->
 handle_recv([?BONES_RPC_RESPONSE, ID, Error, Result], _Client, State) ->
     Response = {response, ID, Error, Result},
     signal_future(State, {request, ID}, Response);
-handle_recv(#bones_rpc_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, _Client, State) ->
     Acknowledge = {acknowledge, ID, false},
     signal_future(State, {synack, ID}, Acknowledge);
-handle_recv(#bones_rpc_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, _Client, State) ->
     Acknowledge = {acknowledge, ID, true},
     signal_future(State, {synack, ID}, Acknowledge).
 
