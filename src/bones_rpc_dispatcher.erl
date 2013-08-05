@@ -11,9 +11,7 @@
 
 %% API
 -export([dispatch_init/3,
-         dispatch_request/2,
-         dispatch_notify/2,
-         dispatch_info/2,
+         dispatch_message/2,
          dispatch_terminate/3]).
 
 -record(state, {
@@ -40,35 +38,25 @@ dispatch_init(_Type, undefined, _HandlerOpts) ->
 dispatch_init(Type, Handler, HandlerOpts) ->
     handler_init(#state{type=Type, handler=Handler, handler_opts=HandlerOpts}).
 
--spec dispatch_request(Request::bones_rpc:request(), State::any())
+-spec dispatch_message(Request::bones_rpc:request(), State::any())
     -> {ok, State}
     | {ok, State, hibernate}
     | {ok, State, timeout()}
     | {ok, State, timeout(), hibernate}
     | {shutdown, Reason::term(), State}.
-dispatch_request({request, MsgID, Method, Params}, State) ->
-    Req = {MsgID, Method, Params},
-    From = {self(), MsgID},
-    handler_request(State, bones_rpc_request, From, Req).
-
--spec dispatch_notify(Notify::bones_rpc:notify(), State::any())
-    -> {ok, State}
-    | {ok, State, hibernate}
-    | {ok, State, timeout()}
-    | {ok, State, timeout(), hibernate}
-    | {shutdown, Reason::term(), State}.
-dispatch_notify({notify, Method, Params}, State) ->
-    Req = {Method, Params},
-    handler_notify(State, bones_rpc_notify, Req).
-
--spec dispatch_info(Info::term(), State::any())
-    -> {ok, State}
-    | {ok, State, hibernate}
-    | {ok, State, timeout()}
-    | {ok, State, timeout(), hibernate}
-    | {shutdown, Reason::term(), State}.
-dispatch_info(Info, State) ->
-    handler_info(State, bones_rpc_info, Info).
+dispatch_message({'$bones_rpc_info', Info}, State) ->
+    handler_cast(State, bones_rpc_info, Info);
+dispatch_message({synchronize, MsgID, Adapter}, State) ->
+    Message = {MsgID, Adapter},
+    From = {self(), {synack, MsgID}},
+    handler_call(State, bones_rpc_synchronize, From, Message);
+dispatch_message({request, MsgID, Method, Params}, State) ->
+    Message = {MsgID, Method, Params},
+    From = {self(), {request, MsgID}},
+    handler_call(State, bones_rpc_request, From, Message);
+dispatch_message({notify, Method, Params}, State) ->
+    Message = {Method, Params},
+    handler_cast(State, bones_rpc_notify, Message).
 
 -spec dispatch_terminate(Reason::term(), Message :: undefined | bones_rpc:request() | bones_rpc:notify(), State::any())
     -> term().
@@ -95,7 +83,7 @@ handler_init(State=#state{type=Type, handler=Handler, handler_opts=HandlerOpts})
     end.
 
 %% @private
-handler_request(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, From, Req) ->
+handler_call(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, From, Req) ->
     case Handler:Callback(Req, From, HandlerState) of
         {noreply, HandlerState2} ->
             {ok, State#state{handler_state=HandlerState2}};
@@ -105,40 +93,37 @@ handler_request(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler
             {ok, State#state{handler_state=HandlerState2}, Timeout};
         {noreply, HandlerState2, Timeout, hibernate} ->
             {ok, State#state{handler_state=HandlerState2}, Timeout, hibernate};
-        {reply, Reply={Type, _}, HandlerState2} when Type =:= result orelse Type =:= error ->
+        {shutdown, Reason, HandlerState2} ->
+            {shutdown, Reason, State#state{handler_state=HandlerState2}};
+        {reply, Reply, HandlerState2} ->
+            ok = check_reply(Callback, Reply),
             bones_rpc:reply(From, Reply),
             {ok, State#state{handler_state=HandlerState2}};
-        {reply, Reply={Type, _}, HandlerState2, hibernate} when Type =:= result orelse Type =:= error ->
+        {reply, Reply, HandlerState2, hibernate} ->
+            ok = check_reply(Callback, Reply),
             bones_rpc:reply(From, Reply),
             {ok, State#state{handler_state=HandlerState2}, hibernate};
-        {reply, Reply={Type, _}, HandlerState2, Timeout} when Type =:= result orelse Type =:= error ->
+        {reply, Reply, HandlerState2, Timeout} ->
+            ok = check_reply(Callback, Reply),
             bones_rpc:reply(From, Reply),
             {ok, State#state{handler_state=HandlerState2}, Timeout};
-        {reply, Reply={Type, _}, HandlerState2, Timeout, hibernate} when Type =:= result orelse Type =:= error ->
+        {reply, Reply, HandlerState2, Timeout, hibernate} ->
+            ok = check_reply(Callback, Reply),
             bones_rpc:reply(From, Reply),
-            {ok, State#state{handler_state=HandlerState2}, Timeout, hibernate};
-        {shutdown, Reason, HandlerState2} ->
-            {shutdown, Reason, State#state{handler_state=HandlerState2}}
+            {ok, State#state{handler_state=HandlerState2}, Timeout, hibernate}
     end.
 
 %% @private
-handler_notify(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, Req) ->
+check_reply(bones_rpc_synchronize, {true, Adapter}) when is_atom(Adapter) ->
+    ok;
+check_reply(bones_rpc_synchronize, false) ->
+    ok;
+check_reply(bones_rpc_request, {Type, _}) when Type =:= result orelse Type =:= error ->
+    ok.
+
+%% @private
+handler_cast(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, Req) ->
     case Handler:Callback(Req, HandlerState) of
-        {noreply, HandlerState2} ->
-            {ok, State#state{handler_state=HandlerState2}};
-        {noreply, HandlerState2, hibernate} ->
-            {ok, State#state{handler_state=HandlerState2}, hibernate};
-        {noreply, HandlerState2, Timeout} ->
-            {ok, State#state{handler_state=HandlerState2}, Timeout};
-        {noreply, HandlerState2, Timeout, hibernate} ->
-            {ok, State#state{handler_state=HandlerState2}, Timeout, hibernate};
-        {shutdown, Reason, HandlerState2} ->
-            {shutdown, Reason, State#state{handler_state=HandlerState2}}
-    end.
-
-%% @private
-handler_info(State=#state{handler=Handler, handler_opts=_HandlerOpts, handler_state=HandlerState}, Callback, Info) ->
-    case Handler:Callback(Info, HandlerState) of
         {noreply, HandlerState2} ->
             {ok, State#state{handler_state=HandlerState2}};
         {noreply, HandlerState2, hibernate} ->

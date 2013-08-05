@@ -1,11 +1,8 @@
-#!/usr/bin/env escript
-%%! -smp enable -pa ebin -env ERL_LIBS apps:deps -input
--module(simple_handler).
--mode(compile).
+-module(adapter_server).
 -behaviour(bones_rpc_handler).
 
 %% API
--export([main/1]).
+-export([start_listener/1, start_listener/6, stop_listener/1, get_port/1, connect/2]).
 
 %% bones_rpc_handler callbacks
 -export([bones_rpc_init/2,
@@ -15,32 +12,43 @@
          bones_rpc_info/2,
          bones_rpc_terminate/3]).
 
+-record(state, {
+    name = undefined :: undefined | ranch:ref()
+}).
+
 %%%===================================================================
 %%% API functions
 %%%===================================================================
 
-main(_) ->
-    Port = 18800,
-    ok = application:start(sasl),
-    ok = application:start(crypto),
-    ok = application:start(ranch),
-    ok = application:start(bones_rpc),
+start_listener(Ref) ->
+    start_listener(Ref, 4, ranch_tcp, [], [], []).
 
-    io:format(" [*] Running at localhost:~p~n", [Port]),
+start_listener(Ref, NbAcceptors, Transport, TransOpts, Options, HandlerOpts) ->
+    TransOpts2 = [{port, 0} | TransOpts],
+    HandlerOpts2 = [{name, Ref} | HandlerOpts],
+    bones_rpc:start_listener(Ref, NbAcceptors, Transport, TransOpts2, Options, ?MODULE, HandlerOpts2).
 
-    bones_rpc:start_listener(bones_rpc_simple_handler, 4, ranch_tcp, [{port, Port}], [], simple_handler, []),
-    % shell:start(),
+stop_listener(Ref) ->
+    bones_rpc:stop_listener(Ref).
 
-    receive
-        _ -> ok
-    end.
+get_port(Ref) ->
+    ranch:get_port(Ref).
+
+connect(Ref, Options) ->
+    ClientSpec = {Ref,
+        {bones_rpc, connect, [{127,0,0,1}, get_port(Ref), Options]},
+        transient, brutal_kill, worker, [bones_rpc_client]},
+    ct:log("client spec: ~p", [ClientSpec]),
+    supervisor:start_child(bones_rpc_sup, ClientSpec).
 
 %%%===================================================================
 %%% bones_rpc_handler callbacks
 %%%===================================================================
 
-bones_rpc_init(_Type, _Opts) ->
-    {ok, undefined}.
+bones_rpc_init(_Type, Options) ->
+    Name = proplists:get_value(name, Options),
+    State = #state{name=Name},
+    {ok, State}.
 
 bones_rpc_synchronize({_MsgID, <<"erlang">>}, _From, State) ->
     {reply, {true, bones_erlang}, State};
@@ -72,11 +80,17 @@ bones_rpc_request({_, <<"sum">>, Nums}, From, State) ->
     end),
     {noreply, State};
 bones_rpc_request(Request, _, State) ->
-    io:format("REQUEST: ~p~n", [Request]),
+    io:format("UNKNOWN REQUEST: ~p~n", [Request]),
     {reply, {result, true}, State}.
 
+bones_rpc_notify({<<"ping">>, [Binary, N]}, State) when is_binary(Binary) ->
+    Pid = erlang:binary_to_term(Binary),
+    Pid ! {pong, N},
+    {noreply, State};
+bones_rpc_notify({<<"ping">>, [List, N]}, State) when is_list(List) -> %% json doesn't handle straight binary
+    bones_rpc_notify({<<"ping">>, [erlang:list_to_binary(List), N]}, State);
 bones_rpc_notify(Notify, State) ->
-    io:format("NOTIFY: ~p~n", [Notify]),
+    io:format("UNKNOWN NOTIFY: ~p~n", [Notify]),
     {noreply, State}.
 
 bones_rpc_info(_Info, State) ->

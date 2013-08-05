@@ -12,7 +12,7 @@
 
 %% API
 -export([manual_start/0]).
--export([connect/1, connect/3]).
+-export([connect/1, connect/3, disconnect/1]).
 -export([start_listener/7, stop_listener/1, child_spec/7, reply/2]).
 
 %% Types
@@ -66,6 +66,10 @@ connect(Host, Port, Options) ->
     Client = bones_rpc_client_v1:new(Host, Port, Options),
     connect(Client).
 
+disconnect(Pid) when is_pid(Pid) ->
+    _ = bones_rpc_client:shutdown(Pid),
+    ok.
+
 -spec start_listener(ranch:ref(), non_neg_integer(), module(), any(), any(), module(), any())
     -> {ok, pid()} | {error, badarg}.
 start_listener(Ref, NbAcceptors, Transport, TransOpts, Options, Handler, HandlerOpts)
@@ -99,10 +103,14 @@ child_spec(Ref, NbAcceptors, Transport, TransOpts, Options, Handler, HandlerOpts
         {options, Options}
     ]).
 
-reply({To, MsgID}, {error, Error}) ->
-    catch To ! {'$bones_rpc_reply', MsgID, Error, nil};
-reply({To, MsgID}, {result, Result}) ->
-    catch To ! {'$bones_rpc_reply', MsgID, nil, Result}.
+reply({To, Tag={synack, _MsgID}}, Message={true, Adapter}) when is_atom(Adapter) ->
+    catch To ! {'$bones_rpc_reply', Tag, Message};
+reply({To, Tag={synack, _MsgID}}, Message=false) ->
+    catch To ! {'$bones_rpc_reply', Tag, Message};
+reply({To, Tag={request, _MsgID}}, {error, Error}) ->
+    catch To ! {'$bones_rpc_reply', Tag, Error, nil};
+reply({To, Tag={request, _MsgID}}, {result, Result}) ->
+    catch To ! {'$bones_rpc_reply', Tag, nil, Result}.
 
 %%%-------------------------------------------------------------------
 %%% Internal functions

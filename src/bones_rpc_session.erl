@@ -8,7 +8,6 @@
 %%%-------------------------------------------------------------------
 -module(bones_rpc_session).
 
--include("bones.hrl").
 -include("bones_rpc.hrl").
 
 -callback init(Client::bones_rpc:client())
@@ -62,7 +61,7 @@ handle_send(synchronize, From, Client=#bones_rpc_client_v1{adapter=Adapter}, Sta
     AdapterName = Adapter:name(),
     handle_send({synchronize, ID, AdapterName}, From, Client, State2);
 handle_send({synchronize, ID, Adapter}, From, _Client, State) ->
-    Synchronize = bones_protocol:synchronize(ID, Adapter),
+    {ok, Synchronize} = bones_rpc_factory:build({synchronize, ID, Adapter}),
     FutureKey = {synack, ID},
     {ok, State2} = new_future(State, FutureKey, From),
     {send, Synchronize, FutureKey, State2};
@@ -70,21 +69,21 @@ handle_send({request, Method, Params}, From, Client, State) ->
     {ok, ID, State2} = update_counter(request, {1, 16#7fffffff, 0}, State), %% (1 bsl 31) - 1
     handle_send({request, ID, Method, Params}, From, Client, State2);
 handle_send({request, ID, Method, Params}, From, _Client, State) ->
-    Request = [?BONES_RPC_REQUEST, ID, Method, Params],
+    {ok, Request} = bones_rpc_factory:build({request, ID, Method, Params}),
     FutureKey = {request, ID},
     {ok, State2} = new_future(State, FutureKey, From),
     {send, Request, FutureKey, State2};
 handle_send({notify, Method, Params}, _From, _Client, State) ->
-    Notify = [?BONES_RPC_NOTIFY, Method, Params],
+    {ok, Notify} = bones_rpc_factory:build({notify, Method, Params}),
     {send, Notify, State}.
 
 handle_recv([?BONES_RPC_RESPONSE, ID, Error, Result], _Client, State) ->
     Response = {response, ID, Error, Result},
     signal_future(State, {request, ID}, Response);
-handle_recv(#bones_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, _Client, State) ->
     Acknowledge = {acknowledge, ID, false},
     signal_future(State, {synack, ID}, Acknowledge);
-handle_recv(#bones_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=1, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, _Client, State) ->
     Acknowledge = {acknowledge, ID, true},
     signal_future(State, {synack, ID}, Acknowledge).
 

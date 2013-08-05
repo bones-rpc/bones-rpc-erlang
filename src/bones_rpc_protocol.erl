@@ -9,7 +9,6 @@
 -module(bones_rpc_protocol).
 -behaviour(ranch_protocol).
 
--include("bones.hrl").
 -include("bones_rpc.hrl").
 
 -define(DISPATCHER, bones_rpc_dispatcher).
@@ -32,6 +31,7 @@
     timeout = infinity  :: infinity | timeout(),
 
     adapter     = undefined :: undefined | module(),
+    a_state     = undefined :: undefined | any(),
     hibernate   = false     :: boolean(),
     timeout_ref = undefined :: undefined | reference()
 }).
@@ -90,8 +90,8 @@ dispatcher_init(State=#state{transport=Transport}, Handler, HandlerOpts) ->
     end.
 
 %% @private
-dispatcher_request(State, DispatchState, Data, Callback, Request, NextState) ->
-    try ?DISPATCHER:Callback(Request, DispatchState) of
+dispatcher_message(State, DispatchState, Data, Message, NextState) ->
+    try ?DISPATCHER:dispatch_message(Message, DispatchState) of
         {ok, DispatchState2} ->
             State2 = loop_timeout(State),
             NextState(State2, DispatchState2, Data);
@@ -105,69 +105,15 @@ dispatcher_request(State, DispatchState, Data, Callback, Request, NextState) ->
             State2 = loop_timeout(State),
             NextState(State2#state{timeout=Timeout, hibernate=true}, DispatchState2, Data);
         {shutdown, Reason, DispatchState2} ->
-            dispatcher_terminate(State, DispatchState2, Request, Reason)
+            dispatcher_terminate(State, DispatchState2, Message, Reason)
     catch
         Class:Reason ->
             error_logger:error_msg(
                 "** ~p ~p terminating in ~p/~p~n"
-                "   for the reason ~p:~p~n** Request was ~p~n"
+                "   for the reason ~p:~p~n** Message was ~p~n"
                 "** Options were ~p~n** Stacktrace: ~p~n~n",
-                [?MODULE, self(), dispatcher_request, 6, Class, Reason, Request, State#state.options, erlang:get_stacktrace()]),
-            dispatcher_terminate(State, DispatchState, Request, Reason)
-    end.
-
-%% @private
-dispatcher_notify(State, DispatchState, Data, Callback, Notify, NextState) ->
-    try ?DISPATCHER:Callback(Notify, DispatchState) of
-        {ok, DispatchState2} ->
-            State2 = loop_timeout(State),
-            NextState(State2, DispatchState2, Data);
-        {ok, DispatchState2, hibernate} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{hibernate=true}, DispatchState2, Data);
-        {ok, DispatchState2, Timeout} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{timeout=Timeout}, DispatchState2, Data);
-        {ok, DispatchState2, Timeout, hibernate} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{timeout=Timeout, hibernate=true}, DispatchState2, Data);
-        {shutdown, Reason, DispatchState2} ->
-            dispatcher_terminate(State, DispatchState2, Notify, Reason)
-    catch
-        Class:Reason ->
-            error_logger:error_msg(
-                "** ~p ~p terminating in ~p/~p~n"
-                "   for the reason ~p:~p~n** Notify was ~p~n"
-                "** Options were ~p~n** Stacktrace: ~p~n~n",
-                [?MODULE, self(), dispatcher_notify, 6, Class, Reason, Notify, State#state.options, erlang:get_stacktrace()]),
-            dispatcher_terminate(State, DispatchState, Notify, Reason)
-    end.
-
-%% @private
-dispatcher_info(State, DispatchState, Data, Callback, Info, NextState) ->
-    try ?DISPATCHER:Callback(Info, DispatchState) of
-        {ok, DispatchState2} ->
-            State2 = loop_timeout(State),
-            NextState(State2, DispatchState2, Data);
-        {ok, DispatchState2, hibernate} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{hibernate=true}, DispatchState2, Data);
-        {ok, DispatchState2, Timeout} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{timeout=Timeout}, DispatchState2, Data);
-        {ok, DispatchState2, Timeout, hibernate} ->
-            State2 = loop_timeout(State),
-            NextState(State2#state{timeout=Timeout, hibernate=true}, DispatchState2, Data);
-        {shutdown, Reason, DispatchState2} ->
-            dispatcher_terminate(State, DispatchState2, undefined, Reason)
-    catch
-        Class:Reason ->
-            error_logger:error_msg(
-                "** ~p ~p terminating in ~p/~p~n"
-                "   for the reason ~p:~p~n** Options were ~p~n"
-                "** Stacktrace: ~p~n~n",
-                [?MODULE, self(), dispatcher_info, 6, Class, Reason, State#state.options, erlang:get_stacktrace()]),
-            dispatcher_terminate(State, DispatchState, undefined, Reason)
+                [?MODULE, self(), dispatcher_message, 6, Class, Reason, Message, State#state.options, erlang:get_stacktrace()]),
+            dispatcher_terminate(State, DispatchState, Message, Reason)
     end.
 
 %% @private
@@ -197,7 +143,7 @@ before_loop(State=#state{transport=Transport, socket=Socket}, DispatchState, SoF
     loop(State, DispatchState, SoFar).
 
 %% @private
-loop(State=#state{socket=Socket, messages={OK, Closed, Error}, timeout_ref=TRef}, DispatchState, SoFar) ->
+loop(State=#state{socket=Socket, messages={OK, Closed, Error}, timeout_ref=TRef, adapter=OldAdapter}, DispatchState, SoFar) ->
     receive
         {OK, Socket, Data} ->
             State2 = loop_timeout(State),
@@ -210,11 +156,37 @@ loop(State=#state{socket=Socket, messages={OK, Closed, Error}, timeout_ref=TRef}
             dispatcher_terminate(State, DispatchState, undefined, {normal, timeout});
         {timeout, OlderTRef, ?MODULE} when is_reference(OlderTRef) ->
             loop(State, DispatchState, SoFar);
-        {'$bones_rpc_reply', MsgID, MsgError, MsgResult} ->
-            Response = [?BONES_RPC_RESPONSE, MsgID, MsgError, MsgResult],
+        {'$bones_rpc_reply', {request, MsgID}, MsgError, MsgResult} ->
+            {ok, Response} = bones_rpc_factory:build({response, MsgID, MsgError, MsgResult}),
             send(State, DispatchState, SoFar, Response, fun loop/3);
+        {'$bones_rpc_reply', {synack, MsgID}, {true, OldAdapter}} ->
+            {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
+            send(State, DispatchState, SoFar, Acknowledge, fun loop/3);
+        {'$bones_rpc_reply', {synack, MsgID}, {true, NewAdapter}} ->
+            _ = case State#state.a_state of
+                undefined ->
+                    ok;
+                OldAdapterState ->
+                    catch bones_rpc_adapter:stop(OldAdapterState)
+            end,
+            case bones_rpc_adapter:start(NewAdapter) of
+                {ok, NewAdapterState} ->
+                    {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
+                    send(State#state{adapter=NewAdapter, a_state=NewAdapterState}, DispatchState, SoFar, Acknowledge, fun loop/3);
+                AdapterError ->
+                    dispatcher_terminate(State, DispatchState, undefined, {error, AdapterError})
+            end;
+        {'$bones_rpc_reply', {synack, MsgID}, false} ->
+            _ = case State#state.a_state of
+                undefined ->
+                    ok;
+                OldAdapterState ->
+                    catch bones_rpc_adapter:stop(OldAdapterState)
+            end,
+            {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
+            send(State#state{adapter=undefined, a_state=undefined}, DispatchState, SoFar, Acknowledge, fun loop/3);
         Message ->
-            dispatcher_info(State, DispatchState, SoFar, dispatch_info, Message, fun loop/3)
+            dispatcher_message(State, DispatchState, SoFar, {'$bones_rpc_info', Message}, fun loop/3)
     end.
 
 %% @private
@@ -228,21 +200,17 @@ loop_timeout(State=#state{timeout=Timeout, timeout_ref=PrevRef}) ->
     TRef = erlang:start_timer(Timeout, self(), ?MODULE),
     State#state{timeout_ref=TRef}.
 
-parse_data(State=#state{adapter=Adapter}, DispatchState, Data) ->
-    case bones_rpc_adapter:unpack_stream(Data, Adapter) of
-        {#bones_ext_v1{head=0, data = << ID:4/big-unsigned-integer-unit:8, NewAdapter/binary >>}, RemainingData} ->
-            case bones_adapter:find(NewAdapter) of
-                undefined ->
-                    send(State#state{adapter=undefined}, DispatchState, RemainingData, bones_protocol:acknowledge(ID, false), fun parse_data/3);
-                AdapterModule when is_atom(AdapterModule) ->
-                    send(State#state{adapter=AdapterModule}, DispatchState, RemainingData, bones_protocol:acknowledge(ID, true), fun parse_data/3)
-            end;
+parse_data(State=#state{a_state=AState}, DispatchState, Data) ->
+    case bones_rpc_adapter:unpack_stream(Data, AState) of
+        {#bones_rpc_ext_v1{head=0, data = << MsgID:4/big-unsigned-integer-unit:8, Adapter/binary >>}, RemainingData} ->
+            Synchronize = {synchronize, MsgID, Adapter},
+            dispatcher_message(State, DispatchState, RemainingData, Synchronize, fun parse_data/3);
         {[?BONES_RPC_REQUEST, MsgID, Method, Params], RemainingData} ->
             Request = {request, MsgID, Method, Params},
-            dispatcher_request(State, DispatchState, RemainingData, dispatch_request, Request, fun parse_data/3);
+            dispatcher_message(State, DispatchState, RemainingData, Request, fun parse_data/3);
         {[?BONES_RPC_NOTIFY, Method, Params], RemainingData} ->
             Notify = {notify, Method, Params},
-            dispatcher_notify(State, DispatchState, RemainingData, dispatch_notify, Notify, fun parse_data/3);
+            dispatcher_message(State, DispatchState, RemainingData, Notify, fun parse_data/3);
         {error, incomplete} ->
             %% Need more data.
             before_loop(State, DispatchState, Data);
@@ -250,9 +218,9 @@ parse_data(State=#state{adapter=Adapter}, DispatchState, Data) ->
             dispatcher_terminate(State, DispatchState, undefined, Error)
     end.
 
-send(State=#state{transport=Transport, socket=Socket, adapter=Adapter}, DispatchState, Data, Object, NextState) ->
+send(State=#state{transport=Transport, socket=Socket, a_state=AdapterState}, DispatchState, Data, Object, NextState) ->
     try
-        case bones_rpc_adapter:pack(Object, Adapter) of
+        case bones_rpc_adapter:pack(Object, AdapterState) of
             Packet when is_binary(Packet) ->
                 case Transport:send(Socket, Packet) of
                     ok ->

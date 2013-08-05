@@ -26,7 +26,8 @@ dialyzer_verbose = $(dialyzer_verbose_$(V))
 dialyzer = $(dialyzer_verbose) $(DIALYZER)
 
 .PHONY: deps compile build clean distclean docs xref build-plt \
-	check-plt dialyze
+	check-plt dialyze coverage ct eunit test-deps test-compile \
+	test-build test-clean test
 
 all: deps build
 
@@ -102,12 +103,13 @@ test-compile: TEST=1
 test-compile: compile
 
 test-build: TEST=1
-test-build: build
+test-build: $(REBAR)
+	$(rebar) skip_deps=jsx compile
 
 test-clean: TEST=1
 test-clean: clean
 
-test: test-deps test-clean test-build ct
+test: test-deps test-clean test-build build ct
 
 ##
 ## rebar

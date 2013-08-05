@@ -9,12 +9,11 @@
 -module(bones_rpc_client).
 -behaviour(gen_fsm).
 
--include("bones.hrl").
 -include("bones_rpc.hrl").
 
 %% API
 -export([start_link/1]).
--export([cast/2, send/2, send/3, join/2, join/3, sync_send/2, sync_send/3, get_state/1]).
+-export([cast/2, send/2, send/3, join/2, join/3, sync_send/2, sync_send/3, get_state/1, shutdown/1]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
@@ -31,6 +30,9 @@
     socket   = undefined :: undefined | inet:socket(),
     messages = undefined :: undefined | {atom(), atom(), atom()},
     buffer   = <<>>      :: binary(),
+
+    %% Adapter State
+    a_state = undefined :: undefined | any(),
 
     %% Counter State
     synack_id = 0 :: integer(),
@@ -76,24 +78,32 @@ sync_send(Pid, Message, Timeout) ->
 get_state(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, get_state).
 
+shutdown(Pid) ->
+    gen_fsm:send_all_state_event(Pid, shutdown).
+
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
 
 %% @private
-init(Client=#bones_rpc_client_v1{transport=Transport, session_module=SessionModule}) ->
-    case SessionModule:init(Client) of
-        {ok, Session} ->
-            State = #state{client=Client, messages=Transport:messages(),
-                session=Session},
-            case try_connect(State) of
-                {next_state, NextState, State2} ->
-                    {ok, NextState, State2};
-                {next_state, NextState, State2, Timeout} ->
-                    {ok, NextState, State2, Timeout}
+init(Client=#bones_rpc_client_v1{transport=Transport, session_module=SessionModule, adapter=Adapter}) ->
+    case bones_rpc_adapter:start(Adapter) of
+        {ok, AdapterState} ->
+            case SessionModule:init(Client) of
+                {ok, Session} ->
+                    State = #state{client=Client, messages=Transport:messages(),
+                        a_state=AdapterState, session=Session},
+                    case try_connect(State) of
+                        {next_state, NextState, State2} ->
+                            {ok, NextState, State2};
+                        {next_state, NextState, State2, Timeout} ->
+                            {ok, NextState, State2, Timeout}
+                    end;
+                {shutdown, Reason} ->
+                    {stop, Reason}
             end;
-        {shutdown, Reason} ->
-            {stop, Reason}
+        AdapterError ->
+            {stop, {error, {adapter, AdapterError}}}
     end.
 
 %% @private
@@ -104,7 +114,7 @@ handle_event(Event, _StateName, StateData) ->
 
 %% @private
 handle_sync_event(get_state, _From, StateName, StateData) ->
-    {reply, StateData, StateName, StateData};
+    {reply, {StateName, StateData}, StateName, StateData};
 handle_sync_event(Event, _From, _StateName, StateData) ->
     {stop, {error, badevent, Event}, StateData}.
 
@@ -128,6 +138,11 @@ handle_info(Info, _StateName, StateData) ->
     {stop, {error, badmsg, Info}, StateData}.
 
 %% @private
+terminate(Reason, _StateName, #state{a_state=AState, session=Session, client=Client=
+        #bones_rpc_client_v1{session_module=SessionModule}}) ->
+    catch SessionModule:terminate(Reason, Client, Session),
+    catch bones_rpc_adapter:stop(AState),
+    ok;
 terminate(_Reason, _StateName, _StateData) ->
     ok.
 
@@ -271,7 +286,7 @@ idle(_Event, _From, State) ->
 try_connect(State=#state{socket=OldSocket, reconnect_count=Count,
         client=#bones_rpc_client_v1{host=Host, port=Port, debug=Debug,
             transport=Transport, transport_opts=TransportOpts}}) ->
-    case OldSocket of
+    _ = case OldSocket of
         undefined -> ok;
         _         -> (catch Transport:close(OldSocket))
     end,
@@ -297,12 +312,13 @@ try_connect(State=#state{socket=OldSocket, reconnect_count=Count,
 try_synchronize(State=#state{client=#bones_rpc_client_v1{adapter=Adapter}}) ->
     {ok, SynackId, State2} = next_synack_id(State),
     AdapterName = Adapter:name(),
-    Synchronize = bones_protocol:synchronize(SynackId, AdapterName),
+    {ok, Synchronize} = bones_rpc_factory:build({synchronize, SynackId, AdapterName}),
     case send_object(State2, Synchronize) of
         {ok, State3} ->
             {next_state, synchronizing, State3};
         {error, _Error, State3} ->
-            {next_state, connecting, State3, 0}
+            Wait = reconnect_wait(State3),
+            {next_state, connecting, State3#state{reconnect_wait=Wait}, Wait}
     end.
 
 %% @private
@@ -337,36 +353,36 @@ next_synack_id(State=#state{synack_id=SynackId}) ->
 %% Parsing/Sending
 
 %% @private
-send_object(State=#state{socket=Socket, client=#bones_rpc_client_v1{transport=Transport, adapter=Adapter}}, Object) ->
+send_object(State=#state{socket=Socket, a_state=AState, client=#bones_rpc_client_v1{transport=Transport}}, Object) ->
     try
-        case bones_rpc_adapter:pack(Object, Adapter) of
+        case bones_rpc_adapter:pack(Object, AState) of
             Packet when is_binary(Packet) ->
                 case Transport:send(Socket, Packet) of
                     ok ->
                         {ok, State};
                     {error, SocketReason} ->
-                        {error, {socket, SocketReason}, State}
+                        erlang:error({socket, SocketReason})
                 end;
             {error, AdapterReason} ->
-                {error, {adapter, AdapterReason}, State}
+                erlang:error({adapter, AdapterReason})
         end
     catch
         Class:Reason ->
             error_logger:error_msg(
-                "** ~p ~p terminating in ~p/~p~n"
+                "** ~p ~p non-fatal error in ~p/~p~n"
                 "   for the reason ~p:~p~n** Stacktrace: ~p~n~n",
                 [?MODULE, self(), send, 2, Class, Reason, erlang:get_stacktrace()]),
             {error, Reason, State}
     end.
 
 %% @private
-parse_data(State=#state{socket=Socket, synack_id=SynackId, session=Session,
-        client=Client=#bones_rpc_client_v1{transport=Transport,
-            adapter=Adapter, session_module=SessionModule}}, synchronizing, Data) ->
-    case bones_rpc_adapter:unpack_stream(Data, Adapter) of
-        {#bones_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C2 >>}, _RemainingData} ->
+parse_data(State=#state{socket=Socket, synack_id=SynackId, a_state=AState,
+        session=Session, client=Client=#bones_rpc_client_v1{transport=Transport,
+            session_module=SessionModule}}, synchronizing, Data) ->
+    case bones_rpc_adapter:unpack_stream(Data, AState) of
+        {#bones_rpc_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C2 >>}, _RemainingData} ->
             {stop, {error, adapter_not_supported}, State};
-        {#bones_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C3 >>}, RemainingData} ->
+        {#bones_rpc_ext_v1{head=1, data = << SynackId:4/big-unsigned-integer-unit:8, 16#C3 >>}, RemainingData} ->
             case SessionModule:handle_up(Client, Session) of
                 {ok, Session2} ->
                     parse_data(State#state{session=Session2}, idle, RemainingData);
@@ -380,10 +396,10 @@ parse_data(State=#state{socket=Socket, synack_id=SynackId, session=Session,
         {error, _} = Error ->
             {stop, Error, State}
     end;
-parse_data(State=#state{socket=Socket, session=Session, client=Client=
-        #bones_rpc_client_v1{transport=Transport, adapter=Adapter,
+parse_data(State=#state{socket=Socket, a_state=AState, session=Session,
+        client=Client=#bones_rpc_client_v1{transport=Transport,
             session_module=SessionModule}}, StateName, Data) ->
-    case bones_rpc_adapter:unpack_stream(Data, Adapter) of
+    case bones_rpc_adapter:unpack_stream(Data, AState) of
         {Message, RemainingData} when Message =/= error ->
             case SessionModule:handle_recv(Message, Client, Session) of
                 {ok, Session2} ->

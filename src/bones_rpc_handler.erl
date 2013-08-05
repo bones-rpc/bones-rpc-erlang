@@ -17,7 +17,19 @@
     | {ok, State, timeout()}
     | {ok, State, timeout(), hibernate}
     | {shutdown, Reason::any(), State}.
--callback bones_rpc_request({bones_rpc:msg_id(), bones_rpc:method(), bones_rpc:params()}, From::{pid(), bones_rpc:msg_id()}, State::any())
+-callback bones_rpc_synchronize({bones_rpc:msg_id(), bones_rpc:adapter()},
+        From::{pid(), {synack, bones_rpc:msg_id()}}, State::any())
+    -> {noreply, State}
+    | {noreply, State, hibernate}
+    | {noreply, State, timeout()}
+    | {noreply, State, timeout(), hibernate}
+    | {reply, {true, Adapter::module()} | false, State}
+    | {reply, {true, Adapter::module()} | false, State, hibernate}
+    | {reply, {true, Adapter::module()} | false, State, timeout()}
+    | {reply, {true, Adapter::module()} | false, State, timeout(), hibernate}
+    | {shutdown, Reason::any(), State}.
+-callback bones_rpc_request({bones_rpc:msg_id(), bones_rpc:method(), bones_rpc:params()},
+        From::{pid(), {request, bones_rpc:msg_id()}}, State::any())
     -> {noreply, State}
     | {noreply, State, hibernate}
     | {noreply, State, timeout()}

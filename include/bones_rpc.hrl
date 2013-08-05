@@ -11,9 +11,9 @@
 -define(BONES_RPC_RESPONSE, 1).
 -define(BONES_RPC_NOTIFY, 2).
 
--record(bones_rpc_ext8_v1, {
-    head = 0    :: integer(),
-    data = <<>> :: binary()
+-record(bones_rpc_ext_v1, {
+    head = undefined :: undefined | integer(),
+    data = undefined :: undefined | binary()
 }).
 
 -record(bones_rpc_client_v1, {
