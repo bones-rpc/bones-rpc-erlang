@@ -9,10 +9,12 @@
 -module(bones_rpc).
 
 -include("bones_rpc.hrl").
+-include("bones_rpc_internal.hrl").
 
 %% API
 -export([manual_start/0]).
 -export([connect/1, connect/3, disconnect/1]).
+-export([new_cluster/1, rm_cluster/1, delete_cluster/1]).
 -export([start_listener/7, stop_listener/1, child_spec/7, reply/2]).
 
 %% Types
@@ -32,9 +34,6 @@
 -type synchronize() :: {0, message_id(), adapter()}.
 -type acknowledge() :: {1, message_id(), boolean()}.
 -export_type([adapter/0, synchronize/0, acknowledge/0]).
-
--type client() :: #bones_rpc_client_v1{}.
--export_type([client/0]).
 
 % -type synchronize_message() :: {synchronize, ID::integer(), Adapter::binary()}.
 % -type acknowledge_message() :: {acknowledge, ID::integer(), Ready::boolean()}.
@@ -59,12 +58,18 @@ manual_start() ->
     application:start(ranch),
     application:start(bones_rpc).
 
-connect(Client=#bones_rpc_client_v1{}) ->
-    bones_rpc_client:start_link(Client).
+connect(List) ->
+    Conn = bones_rpc_config:list_to_conn(List),
+    bones_rpc_connection:start_link(Conn).
 
 connect(Host, Port, Options) ->
-    Client = bones_rpc_client_v1:new(Host, Port, Options),
-    connect(Client).
+    Address = bones_rpc_address:new(Host, Port),
+    case bones_rpc_address:resolve(Address) of
+        {ok, Address2} ->
+            connect([{address, Address2} | Options]);
+        Error ->
+            Error
+    end.
 
 disconnect(Pid) when is_pid(Pid) ->
     _ = bones_rpc_client:shutdown(Pid),
@@ -102,6 +107,15 @@ child_spec(Ref, NbAcceptors, Transport, TransOpts, Options, Handler, HandlerOpts
         {handler_opts, HandlerOpts},
         {options, Options}
     ]).
+
+new_cluster(Cluster) ->
+    bones_rpc_sup:new_cluster(Cluster).
+
+rm_cluster(Cluster) ->
+    bones_rpc_sup:rm_cluster(Cluster).
+
+delete_cluster(Cluster) ->
+    bones_rpc_sup:delete_cluster(Cluster).
 
 reply({To, Tag={synack, _MsgID}}, Message={true, Adapter}) when is_atom(Adapter) ->
     catch To ! {'$bones_rpc_reply', Tag, Message};

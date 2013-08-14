@@ -45,11 +45,6 @@
 -export([start/1, stop/1, name/0, pack/1, pack/2, unpack/1, unpack/2,
          unpack_stream/1, unpack_stream/2]).
 
--record(bones_rpc_adapter, {
-    adapter = undefined :: undefined | module(),
-    state   = undefined :: undefined | any()
-}).
-
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -76,15 +71,14 @@ unpack_ext_stream(_) ->
 
 start(Adapter) ->
     case Adapter:start([]) of
-        {ok, AState} ->
-            State = #bones_rpc_adapter{adapter=Adapter, state=AState},
+        {ok, State} ->
             {ok, State};
         Error ->
             Error
     end.
 
-stop(#bones_rpc_adapter{adapter=Adapter, state=AState}) ->
-    _ = Adapter:stop(AState),
+stop({Adapter, State}) ->
+    _ = Adapter:stop(State),
     ok.
 
 name() ->
@@ -95,8 +89,8 @@ pack(_Term) ->
 
 pack(Ext=#bones_rpc_ext_v1{}, _State) ->
     pack_ext(Ext);
-pack(Term, #bones_rpc_adapter{adapter=Adapter, state=AState}) ->
-    Adapter:pack(Term, AState);
+pack(Term, {Adapter, State}) ->
+    Adapter:pack(Term, State);
 pack(Term, Adapter) ->
     Adapter:pack(Term).
 
@@ -112,16 +106,16 @@ unpack(Binary, undefined) ->
         Error ->
             Error
     end;
-unpack(Binary, #bones_rpc_adapter{adapter=Adapter, state=AState}) ->
+unpack(Binary, {Adapter, State}) ->
     case unpack_ext_stream(Binary) of
         {<< Head, Data/binary >>, <<>>} when Head =< 100 ->
             {ok, #bones_rpc_ext_v1{head=Head, data=Data}};
         {<< Head, Data/binary >>, <<>>} ->
-            Adapter:unpack(#bones_rpc_ext_v1{head=Head, data=Data}, AState);
+            Adapter:unpack(#bones_rpc_ext_v1{head=Head, data=Data}, State);
         {_, Remaining} when is_binary(Remaining) andalso Remaining =/= <<>> ->
             {error, not_just_binary};
         {error, bad_ext_stream} ->
-            Adapter:unpack(Binary, AState);
+            Adapter:unpack(Binary, State);
         Error ->
             Error
     end;
@@ -151,19 +145,19 @@ unpack_stream(Binary, undefined) ->
         Error ->
             Error
     end;
-unpack_stream(Binary, #bones_rpc_adapter{adapter=Adapter, state=AState}) ->
+unpack_stream(Binary, {Adapter, State}) ->
     case unpack_ext_stream(Binary) of
         {<< Head, Data/binary >>, Rest} when Head =< 100 ->
             {#bones_rpc_ext_v1{head=Head, data=Data}, Rest};
         {<< Head, Data/binary >>, Rest} ->
-            case Adapter:unpack(#bones_rpc_ext_v1{head=Head, data=Data}, AState) of
+            case Adapter:unpack(#bones_rpc_ext_v1{head=Head, data=Data}, State) of
                 {ok, Term} ->
                     {Term, Rest};
                 Error ->
                     Error
             end;
         {error, bad_ext_stream} ->
-            Adapter:unpack_stream(Binary, AState);
+            Adapter:unpack_stream(Binary, State);
         Error ->
             Error
     end;

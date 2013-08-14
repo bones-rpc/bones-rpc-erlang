@@ -30,10 +30,11 @@
     options = undefined :: undefined | [proplists:property()],
     timeout = infinity  :: infinity | timeout(),
 
-    adapter     = undefined :: undefined | module(),
-    a_state     = undefined :: undefined | any(),
+    adapter     = undefined :: undefined | module() | {module(), any()},
     hibernate   = false     :: boolean(),
-    timeout_ref = undefined :: undefined | reference()
+    timeout_ref = undefined :: undefined | reference(),
+
+    ring = undefined :: undefined | #bones_rpc_ring_v1{}
 }).
 
 %%%===================================================================
@@ -44,7 +45,7 @@
 -spec start_link(ranch:ref(), inet:socket(), module(), [proplists:property()])
     -> {ok, pid()}.
 start_link(Ref, Socket, Transport, ProtoOpts) ->
-    ranch:require([ranch, crypto]),
+    ranch:require([ranch, crypto, bones_rpc]),
     Pid = spawn_link(?MODULE, init, [[Ref, Socket, Transport, ProtoOpts]]),
     {ok, Pid}.
 
@@ -53,13 +54,20 @@ start_link(Ref, Socket, Transport, ProtoOpts) ->
 %%%===================================================================
 
 init([Ref, Socket, Transport, ProtoOpts]) ->
+    ok = bones_rpc_ring_event:add_handler(bones_rpc_ring_event_handler, {Ref, self()}),
+    Cluster = get_value(cluster, ProtoOpts, Ref),
+    Cookie = get_value(cookie, ProtoOpts, Ref),
+    IP = get_value(ip, ProtoOpts, {127,0,0,1}),
+    Port = get_value(port, ProtoOpts, ranch:get_port(Ref)),
+    Ring = bones_rpc_ring_v1:new(Cluster, Cookie, IP, Port),
+    ok = bones_rpc_ring:merge(Ring),
     Options = get_value(options, ProtoOpts, []),
     Handler = get_value(handler, ProtoOpts, undefined),
     HandlerOpts = get_value(handler_opts, ProtoOpts, undefined),
     Timeout = get_value(timeout, Options, infinity),
     ok = ranch:accept_ack(Ref),
     State = #state{socket=Socket, transport=Transport, messages=Transport:messages(),
-        options=Options, timeout=Timeout},
+        options=Options, timeout=Timeout, ring=Ring},
     dispatcher_init(State, Handler, HandlerOpts).
 
 %%%-------------------------------------------------------------------
@@ -156,35 +164,34 @@ loop(State=#state{socket=Socket, messages={OK, Closed, Error}, timeout_ref=TRef,
             dispatcher_terminate(State, DispatchState, undefined, {normal, timeout});
         {timeout, OlderTRef, ?MODULE} when is_reference(OlderTRef) ->
             loop(State, DispatchState, SoFar);
+        '$bones_rpc_ring' ->
+            {ok, RingObj} = bones_rpc_factory:build({ring, State#state.ring}),
+            send(State, DispatchState, SoFar, RingObj, fun loop/3);
+        {'$bones_rpc_ring', Ring} ->
+            {ok, RingObj} = bones_rpc_factory:build({ring, Ring}),
+            send(State#state{ring=Ring}, DispatchState, SoFar, RingObj, fun loop/3);
         {'$bones_rpc_reply', {request, MsgID}, MsgError, MsgResult} ->
             {ok, Response} = bones_rpc_factory:build({response, MsgID, MsgError, MsgResult}),
             send(State, DispatchState, SoFar, Response, fun loop/3);
-        {'$bones_rpc_reply', {synack, MsgID}, {true, OldAdapter}} ->
-            {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
-            send(State, DispatchState, SoFar, Acknowledge, fun loop/3);
         {'$bones_rpc_reply', {synack, MsgID}, {true, NewAdapter}} ->
-            _ = case State#state.a_state of
-                undefined ->
-                    ok;
-                OldAdapterState ->
-                    catch bones_rpc_adapter:stop(OldAdapterState)
-            end,
-            case bones_rpc_adapter:start(NewAdapter) of
-                {ok, NewAdapterState} ->
+            case OldAdapter of
+                {NewAdapter, _} ->
                     {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
-                    send(State#state{adapter=NewAdapter, a_state=NewAdapterState}, DispatchState, SoFar, Acknowledge, fun loop/3);
-                AdapterError ->
-                    dispatcher_terminate(State, DispatchState, undefined, {error, AdapterError})
+                    send(State, DispatchState, SoFar, Acknowledge, fun loop/3);
+                _ ->
+                    self() ! '$bones_rpc_ring',
+                    case adapter_start(State, NewAdapter) of
+                        {ok, State2} ->
+                            {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
+                            send(State2, DispatchState, SoFar, Acknowledge, fun loop/3);
+                        {error, Reason, State2} ->
+                            dispatcher_terminate(State2, DispatchState, undefined, Reason)
+                    end
             end;
         {'$bones_rpc_reply', {synack, MsgID}, false} ->
-            _ = case State#state.a_state of
-                undefined ->
-                    ok;
-                OldAdapterState ->
-                    catch bones_rpc_adapter:stop(OldAdapterState)
-            end,
+            {ok, State2} = adapter_stop(State),
             {ok, Acknowledge} = bones_rpc_factory:build({acknowledge, MsgID, true}),
-            send(State#state{adapter=undefined, a_state=undefined}, DispatchState, SoFar, Acknowledge, fun loop/3);
+            send(State2, DispatchState, SoFar, Acknowledge, fun loop/3);
         Message ->
             dispatcher_message(State, DispatchState, SoFar, {'$bones_rpc_info', Message}, fun loop/3)
     end.
@@ -200,10 +207,10 @@ loop_timeout(State=#state{timeout=Timeout, timeout_ref=PrevRef}) ->
     TRef = erlang:start_timer(Timeout, self(), ?MODULE),
     State#state{timeout_ref=TRef}.
 
-parse_data(State=#state{a_state=AState}, DispatchState, Data) ->
-    case bones_rpc_adapter:unpack_stream(Data, AState) of
-        {#bones_rpc_ext_v1{head=?BONES_RPC_EXT_SYNCHRONIZE, data = << MsgID:4/big-unsigned-integer-unit:8, Adapter/binary >>}, RemainingData} ->
-            Synchronize = {synchronize, MsgID, Adapter},
+parse_data(State=#state{adapter=Adapter}, DispatchState, Data) ->
+    case bones_rpc_adapter:unpack_stream(Data, Adapter) of
+        {#bones_rpc_ext_v1{head=?BONES_RPC_EXT_SYNCHRONIZE, data = << MsgID:4/big-unsigned-integer-unit:8, AdapterName/binary >>}, RemainingData} ->
+            Synchronize = {synchronize, MsgID, AdapterName},
             dispatcher_message(State, DispatchState, RemainingData, Synchronize, fun parse_data/3);
         {[?BONES_RPC_REQUEST, MsgID, Method, Params], RemainingData} ->
             Request = {request, MsgID, Method, Params},
@@ -218,9 +225,9 @@ parse_data(State=#state{a_state=AState}, DispatchState, Data) ->
             dispatcher_terminate(State, DispatchState, undefined, Error)
     end.
 
-send(State=#state{transport=Transport, socket=Socket, a_state=AdapterState}, DispatchState, Data, Object, NextState) ->
+send(State=#state{transport=Transport, socket=Socket, adapter=Adapter}, DispatchState, Data, Object, NextState) ->
     try
-        case bones_rpc_adapter:pack(Object, AdapterState) of
+        case bones_rpc_adapter:pack(Object, Adapter) of
             Packet when is_binary(Packet) ->
                 case Transport:send(Socket, Packet) of
                     ok ->
@@ -248,6 +255,23 @@ terminate(_TerminateReason, _State=#state{transport=Transport, socket=Socket}) -
 %%%-------------------------------------------------------------------
 %%% Internal functions
 %%%-------------------------------------------------------------------
+
+%% @private
+adapter_start(State, Adapter) ->
+    {ok, State2} = adapter_stop(State),
+    case bones_rpc_adapter:start(Adapter) of
+        {ok, AdapterState} ->
+            {ok, State2#state{adapter={Adapter, AdapterState}}};
+        {error, Reason} ->
+            {error, Reason, State2}
+    end.
+
+%% @private
+adapter_stop(State=#state{adapter=undefined}) ->
+    {ok, State};
+adapter_stop(State=#state{adapter=Adapter}) ->
+    _ = bones_rpc_adapter:stop(Adapter),
+    {ok, State#state{adapter=undefined}}.
 
 %% @doc Faster alternative to proplists:get_value/3.
 get_value(Key, Opts, Default) ->

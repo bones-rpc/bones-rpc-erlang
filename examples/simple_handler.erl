@@ -1,5 +1,5 @@
 #!/usr/bin/env escript
-%%! -smp enable -pa ebin -env ERL_LIBS apps:deps -input
+%%! -smp enable -pa ebin -env ERL_LIBS apps:deps -input -sname bones_rpc_simple
 -module(simple_handler).
 -mode(compile).
 -behaviour(bones_rpc_handler).

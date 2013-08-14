@@ -9,41 +9,44 @@
 -module(bones_rpc_session).
 
 -include("bones_rpc.hrl").
+-include("bones_rpc_internal.hrl").
 
 -callback init(Client::bones_rpc:client())
     -> {ok, State}
     | {shutdown, Reason::any(), State}.
--callback handle_send(Message::any(), Client::bones_rpc:client(), State::any())
+-callback handle_send(Message::any(), State::any())
     -> {send, Object::any(), State}
     | {send, Object::any(), FutureKey::any(), State}
     | {ignore, State}
     | {shutdown, Reason::any(), State}.
--callback handle_recv(Message::any(), Client::bones_rpc:client(), State::any())
+-callback handle_recv(Message::any(), State::any())
     -> {ok, State}
     | {shutdown, Reason::any(), State}.
--callback handle_join(FutureKey::any(), From::{pid(), any()}, Client::bones_rpc:client(), State::any())
+-callback handle_join(FutureKey::any(), From::{pid(), any()}, State::any())
     -> {reply, Reply::any(), State}
     | {noreply, State}
     | {shutdown, Reason::any(), State}.
--callback handle_down(Client::bones_rpc:client(), State::any())
+-callback handle_down(State::any())
     -> {ok, State}
     | {shutdown, Reason::any(), State}.
--callback handle_up(Client::bones_rpc:client(), State::any())
+-callback handle_up(State::any())
     -> {ok, State}
     | {shutdown, Reason::any(), State}.
--callback handle_info(Info::any(), Client::bones_rpc:client(), State::any())
+-callback handle_info(Info::any(), State::any())
     -> {ok, State}
     | {shutdown, Reason::any(), State}.
--callback code_change(OldVsn::term() | {down, term()}, Client::bones_rpc:client(), State::any(), Extra::any())
+-callback code_change(OldVsn::term() | {down, term()}, State::any(), Extra::any())
     -> {ok, State::any()}.
--callback terminate(Reason::any(), Client::bones_rpc:client(), State::any())
+-callback terminate(Reason::any(), State::any())
     -> term().
 
 %% bones_rpc_session callbacks
--export([init/1, handle_send/4, handle_recv/3, handle_join/4, handle_down/2,
-         handle_up/2, handle_info/3, code_change/4, terminate/3]).
+-export([init/1, handle_send/3, handle_recv/2, handle_join/3, handle_down/1,
+         handle_up/1, handle_info/2, code_change/3, terminate/2]).
 
 -record(state, {
+    client   = undefined  :: undefined | bones_rpc:client(),
+    adapter  = undefined  :: undefined | binary(),
     counters = dict:new() :: dict(),
     futures  = dict:new() :: dict()
 }).
@@ -52,42 +55,50 @@
 %%% bones_rpc_session callbacks
 %%%===================================================================
 
-init(_Client) ->
-    State = #state{},
+init(Client=#bones_rpc_client_v1{adapter=Adapter}) ->
+    AdapterName = Adapter:name(),
+    State = #state{client=Client, adapter=AdapterName},
     {ok, State}.
 
-handle_send(synchronize, From, Client=#bones_rpc_client_v1{adapter=Adapter}, State) ->
+handle_send(synchronize, From, State=#state{adapter=Adapter}) ->
     {ok, ID, State2} = update_counter(synack, {1, 16#fffffffe, 0}, State), %% (1 bsl 32) - 2
-    AdapterName = Adapter:name(),
-    handle_send({synchronize, ID, AdapterName}, From, Client, State2);
-handle_send({synchronize, ID, Adapter}, From, _Client, State) ->
+    handle_send({synchronize, ID, Adapter}, From, State2);
+handle_send({synchronize, ID, Adapter}, From, State) ->
     {ok, Synchronize} = bones_rpc_factory:build({synchronize, ID, Adapter}),
     FutureKey = {synack, ID},
     {ok, State2} = new_future(State, FutureKey, From),
     {send, Synchronize, FutureKey, State2};
-handle_send({request, Method, Params}, From, Client, State) ->
+handle_send({request, Method, Params}, From, State) ->
     {ok, ID, State2} = update_counter(request, {1, 16#7fffffff, 0}, State), %% (1 bsl 31) - 1
-    handle_send({request, ID, Method, Params}, From, Client, State2);
-handle_send({request, ID, Method, Params}, From, _Client, State) ->
+    handle_send({request, ID, Method, Params}, From, State2);
+handle_send({request, ID, Method, Params}, From, State) ->
     {ok, Request} = bones_rpc_factory:build({request, ID, Method, Params}),
     FutureKey = {request, ID},
     {ok, State2} = new_future(State, FutureKey, From),
     {send, Request, FutureKey, State2};
-handle_send({notify, Method, Params}, _From, _Client, State) ->
+handle_send({notify, Method, Params}, _From, State) ->
     {ok, Notify} = bones_rpc_factory:build({notify, Method, Params}),
     {send, Notify, State}.
 
-handle_recv([?BONES_RPC_RESPONSE, ID, Error, Result], _Client, State) ->
+handle_recv([?BONES_RPC_RESPONSE, ID, Error, Result], State) ->
     Response = {response, ID, Error, Result},
     signal_future(State, {request, ID}, Response);
-handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C2 >>}, State) ->
     Acknowledge = {acknowledge, ID, false},
     signal_future(State, {synack, ID}, Acknowledge);
-handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, _Client, State) ->
+handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_ACKNOWLEDGE, data = << ID:4/big-unsigned-integer-unit:8, 16#C3 >>}, State) ->
     Acknowledge = {acknowledge, ID, true},
-    signal_future(State, {synack, ID}, Acknowledge).
+    signal_future(State, {synack, ID}, Acknowledge);
+handle_recv(#bones_rpc_ext_v1{head=?BONES_RPC_EXT_RING, data=Data}, State) ->
+    case bones_rpc_ring_v1:from_binary(Data) of
+        Ring=#bones_rpc_ring_v1{} ->
+            self() ! {'$bones_rpc_ring', Ring},
+            {ok, State};
+        _ ->
+            {ok, State}
+    end.
 
-handle_join(Key, From, _Client, State=#state{futures=Futures}) ->
+handle_join(Key, From, State=#state{futures=Futures}) ->
     case dict:find(Key, Futures) of
         {ok, {undefined, Start, undefined, Queue}} ->
             Queue2 = queue:in(From, Queue),
@@ -105,7 +116,7 @@ handle_join(Key, From, _Client, State=#state{futures=Futures}) ->
             {reply, {error, {no_future, Key}}, State}
     end.
 
-handle_down(_Client, State=#state{futures=Futures}) ->
+handle_down(State=#state{futures=Futures}) ->
     ok = dict:fold(fun
         (_Key, {undefined, Start, undefined, Queue}, ok) ->
             Stop = erlang:now(),
@@ -132,16 +143,16 @@ handle_down(_Client, State=#state{futures=Futures}) ->
     State2 = State#state{futures=dict:new()},
     {ok, State2}.
 
-handle_up(_Client, State) ->
+handle_up(State) ->
     {ok, State}.
 
-handle_info(_Info, _Client, State) ->
+handle_info(_Info, State) ->
     {ok, State}.
 
-code_change(_OldVsn, _Client, State, _Extra) ->
+code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-terminate(_Reason, _Client, _State) ->
+terminate(_Reason, _State) ->
     ok.
 
 %%%-------------------------------------------------------------------
@@ -210,6 +221,5 @@ signal_future(State=#state{futures=Futures}, FutureKey, Value) ->
                     {ok, State2}
             end;
         error ->
-            io:format("unknown future received: ~p~n", [FutureKey]),
             {ok, State}
     end.

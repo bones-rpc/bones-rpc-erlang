@@ -2,7 +2,7 @@
 -behaviour(bones_rpc_handler).
 
 %% API
--export([start_listener/1, start_listener/6, stop_listener/1, get_port/1, connect/2]).
+-export([start_listener/1, start_listener/6, stop_listener/1, get_port/1, connect/2, cluster/2]).
 
 %% bones_rpc_handler callbacks
 -export([bones_rpc_init/2,
@@ -40,6 +40,14 @@ connect(Ref, Options) ->
         transient, brutal_kill, worker, [bones_rpc_client]},
     ct:log("client spec: ~p", [ClientSpec]),
     supervisor:start_child(bones_rpc_sup, ClientSpec).
+
+cluster(Ref, Options) ->
+    ClusterConfig = [
+        {seeds, [{{127,0,0,1}, get_port(Ref)}]}
+        | Options
+    ],
+    ct:log("cluster config: ~p", [ClusterConfig]),
+    bones_rpc:new_cluster(ClusterConfig).
 
 %%%===================================================================
 %%% bones_rpc_handler callbacks

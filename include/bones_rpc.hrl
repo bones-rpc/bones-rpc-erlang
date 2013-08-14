@@ -9,6 +9,7 @@
 
 -define(BONES_RPC_EXT_SYNCHRONIZE, 0).
 -define(BONES_RPC_EXT_ACKNOWLEDGE, 1).
+-define(BONES_RPC_EXT_RING, 2).
 
 -define(BONES_RPC_REQUEST, 0).
 -define(BONES_RPC_RESPONSE, 1).
@@ -20,25 +21,19 @@
 }).
 
 -record(bones_rpc_client_v1, {
-    host = undefined :: undefined | inet:ip_address() | inet:hostname(),
-    port = undefined :: undefined | inet:port_number(),
+    host           = undefined :: undefined | inet:ip_address() | inet:hostname(),
+    port           = undefined :: undefined | inet:port_number(),
+    ip             = undefined :: undefined | inet:ip_address(),
+    adapter        = undefined :: undefined | module(),
+    transport      = undefined :: undefined | module(),
+    transport_opts = undefined :: undefined | module()
+}).
 
-    %% Debug Options
-    debug = false :: boolean(),
-
-    %% Adapter Options
-    adapter = undefined :: undefined | module(),
-
-    %% Reconnect Options
-    reconnect       = true     :: boolean(),
-    reconnect_limit = infinity :: infinity | non_neg_integer(),
-    reconnect_min   = 100      :: timeout(),
-    reconnect_max   = 5000     :: timeout(),
-
-    %% Session Options
-    session_module = bones_rpc_session :: module(),
-
-    %% Transport Options
-    transport      = ranch_tcp :: module(),
-    transport_opts = []        :: [proplists:property()]
+-record(bones_rpc_ring_v1, {
+    nodename    = undefined :: undefined | atom(),
+    clustername = undefined :: undefined | atom(),
+    cookie      = undefined :: undefined | atom(),
+    ip          = undefined :: undefined | inet:ip_address(),
+    port        = undefined :: undefined | inet:port_number(),
+    members     = undefined :: undefined | [{atom(), {inet:ip_address(), inet:port_number()}}]
 }).
