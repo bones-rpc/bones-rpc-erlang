@@ -25,9 +25,9 @@ dialyzer_verbose = $(dialyzer_verbose_$(V))
 
 dialyzer = $(dialyzer_verbose) $(DIALYZER)
 
-.PHONY: deps compile build clean distclean docs xref build-plt \
+.PHONY: deps compile build clean appclean distclean docs xref build-plt \
 	check-plt dialyze coverage ct eunit test-deps test-compile \
-	test-build test-clean test
+	test-build test-appclean test-clean test
 
 all: deps build
 
@@ -44,6 +44,9 @@ build: $(REBAR)
 
 clean: $(REBAR)
 	$(rebar) clean
+
+appclean: $(REBAR)
+	$(rebar) skip_deps=true clean
 
 distclean: clean
 	$(rebar) delete-deps
@@ -102,14 +105,15 @@ test-deps: deps
 test-compile: TEST=1
 test-compile: compile
 
-test-build: TEST=1
-test-build: $(REBAR)
-	$(rebar) skip_deps=jsx compile
+test-build: build test-appclean test-compile
+
+test-appclean: TEST=1
+test-appclean: appclean
 
 test-clean: TEST=1
 test-clean: clean
 
-test: test-deps test-clean test-build build ct
+test: test-deps test-clean test-build ct
 
 ##
 ## rebar
